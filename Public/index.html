@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>GéoLoc Liquid Glass</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<style>
+  body {
+    margin:0;
+    font-family:sans-serif;
+    background: linear-gradient(135deg, #74ebd5, #ACB6E5);
+    color:#fff;
+    transition: all 0.3s ease;
+  }
+  body.dark {
+    background: linear-gradient(135deg, #1e1e1e, #3a3a3a);
+    color:#ddd;
+  }
+  #controls {
+    margin:20px auto;
+    backdrop-filter: blur(15px);
+    background: rgba(255,255,255,0.15);
+    border-radius: 15px;
+    padding: 20px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    color:#fff;
+    max-width:400px;
+  }
+  body.dark #controls {
+    background: rgba(30,30,30,0.5);
+    color:#ddd;
+  }
+  input, button {
+    padding:10px;
+    margin:5px;
+    border-radius:8px;
+    border:none;
+    outline:none;
+    font-size:14px;
+    width:calc(100% - 22px);
+  }
+  button {
+    cursor:pointer;
+    background: rgba(255,255,255,0.2);
+    color:#fff;
+    transition: all 0.2s ease;
+  }
+  button:hover {
+    background: rgba(255,255,255,0.4);
+  }
+  body.dark button {
+    background: rgba(255,255,255,0.1);
+  }
+  body.dark button:hover {
+    background: rgba(255,255,255,0.3);
+  }
+  #map{height:80vh;width:100%;display:none;margin-top:20px;}
+  .marker-img{width:40px;height:40px;border-radius:50%;border:2px solid #fff;}
+  #themeToggle{position:fixed;top:10px;right:10px;z-index:999;}
+  #pinTop{margin-top:10px;text-align:center;font-size:24px;font-weight:bold;}
+</style>
+</head>
+<body>
+<div id="topBar" style="text-align:center; margin-top:60px;">
+  <button id="themeToggle">🌙 / ☀️</button>
+  <h2 id="pinTop"></h2>
+</div>
+
+<h1 style="text-align:center; margin-top:20px;">🌍 Partage de position</h1>
+<div id="controls">
+  <h2>Créer un profil</h2>
+  <input id="nameInput" placeholder="Ton nom"/>
+  <input id="avatarInput" placeholder="URL avatar"/>
+  <button id="createBtn" disabled>Créer PIN</button>
+  <p id="pinDisplay"></p>
+  
+  <h2>Ou rejoindre</h2>
+  <input id="pinJoinInput" placeholder="Entre le PIN 6 chiffres"/>
+  <button id="joinBtn" disabled>Rejoindre</button>
+  <p id="joinMsg"></p>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script>
+let map, sharerMarker;
+let myPin = null;
+
+// Initialisation WebSocket
+const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
+const ws = new WebSocket(wsProtocol + "://" + location.host);
+
+ws.onopen = ()=>{
+  console.log("WebSocket connecté !");
+  document.getElementById("createBtn").disabled = false;
+  document.getElementById("joinBtn").disabled = false;
+};
+
+// Réception des messages serveur
+ws.onmessage = (msg)=>{
+  const data = JSON.parse(msg.data);
+
+  if(data.type==="pin"){
+    myPin = data.pin;
+    document.getElementById("pinDisplay").textContent = "Ton PIN : "+data.pin;
+    document.getElementById("pinTop").textContent = "Ton PIN : "+data.pin;
+    console.log("PIN reçu :", myPin);
+    showMap();
+    startGeo();
+  }
+
+  if(data.type==="success"){
+    document.getElementById("joinMsg").textContent = "Connecté à "+data.sharer.name;
+    console.log("Session join succès :", data.sharer);
+    showMap();
+  }
+
+  if(data.type==="error"){
+    document.getElementById("joinMsg").textContent = data.msg;
+    console.log("Erreur session :", data.msg);
+  }
+
+  if(data.type==="location"){
+    const {lat,lng,name,avatar} = data;
+    if(!sharerMarker){
+      const icon = L.divIcon({
+        className:"",
+        html:`<img class="marker-img" src="${avatar}" title="${name}"/>`,
+        iconSize:[40,40]
+      });
+      sharerMarker = L.marker([lat,lng],{icon}).addTo(map);
+    } else {
+      sharerMarker.setLatLng([lat,lng]);
+    }
+    map.setView([lat,lng],13);
+  }
+}
+
+// Création de profil + PIN
+document.getElementById("createBtn").onclick = ()=>{
+  const name = document.getElementById("nameInput").value.trim() || "Sharer";
+  const avatar = document.getElementById("avatarInput").value.trim() || "";
+  if(ws.readyState===1){
+    ws.send(JSON.stringify({type:"create", name, avatar}));
+    console.log("Création de PIN envoyée !");
+  } else {
+    console.log("WebSocket pas prêt :", ws.readyState);
+  }
+}
+
+// Rejoindre session
+document.getElementById("joinBtn").onclick = ()=>{
+  const pin = document.getElementById("pinJoinInput").value.trim();
+  if(pin && ws.readyState===1){
+    ws.send(JSON.stringify({type:"join", pin}));
+    console.log("Tentative de rejoindre PIN :", pin);
+  }
+}
+
+// Afficher carte
+function showMap(){
+  document.getElementById("controls").style.display="none";
+  document.getElementById("map").style.display="block";
+  if(!map){
+    map = L.map("map").setView([0,0],2);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19}).addTo(map);
+  }
+}
+
+// Suivi de la géolocalisation
+function startGeo(){
+  if(!navigator.geolocation){alert("Géoloc non supportée"); return;}
+  navigator.geolocation.watchPosition(pos=>{
+    const {latitude:lat,longitude:lng} = pos.coords;
+    ws.send(JSON.stringify({type:"location", pin:myPin, lat, lng}));
+  });
+}
+
+// Toggle thème sombre / clair
+document.getElementById("themeToggle").onclick = ()=>{
+  document.body.classList.toggle("dark");
+};
+</script>
+</body>
+</html>
